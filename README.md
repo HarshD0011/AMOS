@@ -1,2 +1,2 @@
 # AMOS
-Agentic Monitoring and Observibility Syste
+Agentic Monitoring and Observability System
