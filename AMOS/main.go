@@ -3,129 +3,63 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
-	"time"
 
-	"github.com/HarshD0011/AMOS/AMOS/agent"
-	"github.com/HarshD0011/AMOS/AMOS/config"
-	"github.com/HarshD0011/AMOS/AMOS/k8s"
-	"github.com/HarshD0011/AMOS/AMOS/notification"
-	"github.com/HarshD0011/AMOS/AMOS/service"
-	"github.com/HarshD0011/AMOS/AMOS/tools"
-)
-
-var (
-	configFile = flag.String("config", "config.yaml", "Path to configuration file")
-	debug      = flag.Bool("debug", false, "Enable debug mode")
+	"github.com/HarshD0011/AMOS/AMOS/services"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
+	"k8s.io/klog/v2"
 )
 
 func main() {
+	var kubeconfig *string
+	if home := homedir.HomeDir(); home != "" {
+		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+	} else {
+		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+	}
 	flag.Parse()
 
-	// 1. Load Configuration
-	cfg, err := loadConfig(*configFile)
+	// use the current context in kubeconfig
+	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		log.Printf("Warning: Could not load config file: %v. Using environment variables/defaults.", err)
-		cfg = config.LoadFromEnv()
+		klog.Errorf("Error building kubeconfig: %s", err.Error())
+		// If explicit kubeconfig failed, try in-cluster config (though BuildConfigFromFlags actually handles in-cluster if url/kubeconfig are empty,
+		// but here we might have passed a default path that doesn't exist).
+		// For now, fail hard if config fails.
+		os.Exit(1)
 	}
 
-	// Validate critical config
-	if cfg.ADK.APIKey == "" {
-		// Log warning only for now to allow partial startup if user just wants monitoring but no AI
-		log.Println("WARNING: GOOGLE_API_KEY is not set. Remediation agent will fail.")
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		klog.Errorf("Error building kubernetes client: %s", err.Error())
+		os.Exit(1)
 	}
 
-	if *debug {
-		log.Println("Debug mode enabled")
-	}
-
-	// 2. Setup Context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 3. Handle Signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigChan
-		log.Printf("Received signal: %v. Initiating shutdown...", sig)
-		cancel()
-	}()
+	// Run the setup/informer function to create resources (if this is what the user wants)
+	klog.Info("Running services.Informer to ensure resources exist...")
+	services.Informer(clientset)
 
-	log.Println("AMOS: Autonomous Multi-agent Orchestration Service starting...")
+	// Start PodMonitor
+	podMonitor := services.NewPodMonitor(clientset)
+	go podMonitor.Run(ctx)
+	klog.Info("Started PodMonitor")
 
-	// 4. Initialize Core Components
-	
-	// K8s Client
-	k8sClient, err := k8s.NewClient(&cfg.Kubernetes)
-	if err != nil {
-		log.Fatalf("Failed to create K8s client: %v", err)
-	}
-	log.Println("Connected to Kubernetes cluster")
+	// Start DeploymentMonitor
+	deploymentMonitor := services.NewDeploymentMonitor(clientset)
+	go deploymentMonitor.Run(ctx)
+	klog.Info("Started DeploymentMonitor")
 
-	// 5. Initialize Services
-	
-	// Channels
-	faultOrchChan := make(chan service.UnifiedFault, 100)
-	
-	// Fault Detector
-	faultDetector := service.NewFaultDetector(faultOrchChan)
-	podFaultChan, deployFaultChan, jobFaultChan := faultDetector.GetChannels()
-
-	// Monitors
-	podMonitor := k8s.NewPodMonitor(k8sClient, podFaultChan)
-	deployMonitor := k8s.NewDeploymentMonitor(k8sClient, deployFaultChan)
-	jobMonitor := k8s.NewJobMonitor(k8sClient, jobFaultChan)
-
-	// Utils
-	k8sTools := tools.NewK8sTools(k8sClient)
-	ctxGen := service.NewContextGenerator(k8sTools)
-	snapshotSvc := service.NewSnapshotService(k8sClient)
-	retryMgr := service.NewRetryManager(cfg.Remediation)
-	rollbackSvc := service.NewRollbackService(k8sClient, snapshotSvc)
-	
-	// Notification
-	emailSvc := notification.NewEmailService(cfg.Email)
-	escSvc := notification.NewEscalationService(emailSvc, cfg.Email.EngineerEmail)
-
-	// Agent
-	remediationAgent, err := agent.NewRemediationAgent(&cfg.ADK, k8sTools)
-	if err != nil {
-		log.Fatalf("Failed to create Remediation Agent: %v", err)
-	}
-
-	// Orchestrator
-	orchestrator := service.NewOrchestrator(
-		faultDetector,
-		remediationAgent,
-		ctxGen,
-		snapshotSvc,
-		retryMgr,
-		rollbackSvc,
-		escSvc,
-		faultOrchChan,
-	)
-
-	// 6. Start Background Routines
-	go podMonitor.Start(ctx)
-	go deployMonitor.Start(ctx)
-	go jobMonitor.Start(ctx)
-	go faultDetector.Start(ctx)
-	go orchestrator.Start(ctx)
-
-	log.Println("AMOS is fully operational and watching for faults.")
-
-	// 7. Wait
-	<-ctx.Done()
-	log.Println("Shutdown complete.")
-}
-
-func loadConfig(path string) (*config.Config, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, err
-	}
-	return config.LoadFromFile(path)
+	// Wait for termination signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	klog.Info("Shutting down...")
 }
