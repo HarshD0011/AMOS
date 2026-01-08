@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/HarshD0011/AMOS/AMOS/agent"
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -16,9 +18,10 @@ import (
 type JobMonitor struct {
 	informer cache.SharedIndexInformer
 	queue    workqueue.RateLimitingInterface
+	resolver *agent.Resolver
 }
 
-func NewJobMonitor(client kubernetes.Interface) *JobMonitor {
+func NewJobMonitor(client kubernetes.Interface, resolver *agent.Resolver) *JobMonitor {
 
 	factory := informers.NewSharedInformerFactory(client, 5*time.Minute)
 	informer := factory.Batch().V1().Jobs().Informer()
@@ -26,16 +29,27 @@ func NewJobMonitor(client kubernetes.Interface) *JobMonitor {
 	j := &JobMonitor{
 		informer: informer,
 		queue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "job-monitor"),
+		resolver: resolver,
 	}
 	informer.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				job := obj.(*batchv1.Job)
+				if job.Status.Failed > 0 {
+					key, err := cache.MetaNamespaceKeyFunc(job)
+					if err == nil {
+						j.queue.Add(key)
+					}
+				}
+			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				newJob := newObj.(*batchv1.Job)
-				// oldJob := oldObj.(*batchv1.Job)
-
 				// Check for failure
 				if newJob.Status.Failed > 0 {
-					j.queue.Add(newJob)
+					key, err := cache.MetaNamespaceKeyFunc(newJob)
+					if err == nil {
+						j.queue.Add(key)
+					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
@@ -86,6 +100,13 @@ func (j *JobMonitor) processNextItem() bool {
 		return true
 	}
 
-	klog.Infof("Processing job: %s/%s", obj.(*batchv1.Job).Namespace, obj.(*batchv1.Job).Name)
+	job := obj.(*batchv1.Job)
+	klog.Infof("Processing job: %s/%s", job.Namespace, job.Name)
+
+	// Trigger Diagnosis
+	if j.resolver != nil {
+		j.resolver.Diagnose(context.Background(), job.Namespace, "Job", job.Name, fmt.Sprintf("Job failed with %d failures", job.Status.Failed))
+	}
+
 	return true
 }

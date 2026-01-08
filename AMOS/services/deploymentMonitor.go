@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/HarshD0011/AMOS/AMOS/agent"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -18,39 +19,44 @@ import (
 type DeploymentMonitor struct {
 	informer cache.SharedIndexInformer
 	queue    workqueue.RateLimitingInterface
+	resolver *agent.Resolver
 }
 
-func NewDeploymentMonitor(client kubernetes.Interface) *DeploymentMonitor {
+func NewDeploymentMonitor(client kubernetes.Interface, resolver *agent.Resolver) *DeploymentMonitor {
 	factory := informers.NewSharedInformerFactory(client, 5*time.Minute)
 	informer := factory.Apps().V1().Deployments().Informer()
 
 	c := &DeploymentMonitor{
 		informer: informer,
 		queue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "deployment-monitor"),
+		resolver: resolver,
 	}
 	informer.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
-			UpdateFunc: func(oldObj, newObj interface{}) {
-				newDeployment := newObj.(*appsv1.Deployment)
-				// oldDeployment := oldObj.(*appsv1.Deployment) // unused
-
-				// Check if deployment has failed.
-				// A deployment is considered failed if the Progressing condition is False with Reason=ProgressDeadlineExceeded
-				for _, cond := range newDeployment.Status.Conditions {
+			AddFunc: func(obj interface{}) {
+				deploy := obj.(*appsv1.Deployment)
+				for _, cond := range deploy.Status.Conditions {
 					if cond.Type == appsv1.DeploymentProgressing && cond.Status == "False" && cond.Reason == "ProgressDeadlineExceeded" {
-						// We can also check other failure modes, or if AvailableReplicas == 0 and Replicas > 0 for a long time?
-						// For now, let's catch explicit failures or obscure states?
-						// The prompt implied "monitoring... for faults".
-						// Let's add it to queue.
-						c.queue.Add(newDeployment)
+						key, err := cache.MetaNamespaceKeyFunc(deploy)
+						if err == nil {
+							c.queue.Add(key)
+						}
 						break
 					}
 				}
-
-				// Also check if Replicas > 0 and different from AvailableReplicas for a prolonged time?
-				// But that's hard to distinguish from rolling update.
-				// For the "issue persists" logic, maybe we need to track it.
-				// For now simpler check: if we see a failure condition.
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				newDeployment := newObj.(*appsv1.Deployment)
+				// Check if deployment has failed.
+				for _, cond := range newDeployment.Status.Conditions {
+					if cond.Type == appsv1.DeploymentProgressing && cond.Status == "False" && cond.Reason == "ProgressDeadlineExceeded" {
+						key, err := cache.MetaNamespaceKeyFunc(newDeployment)
+						if err == nil {
+							c.queue.Add(key)
+						}
+						break
+					}
+				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
@@ -101,8 +107,13 @@ func (d *DeploymentMonitor) processNextItem() bool {
 		return true
 	}
 
-	// Process the object?
-	// For now just return true.
-	klog.Infof("Processing deployment: %s/%s", obj.(*appsv1.Deployment).Namespace, obj.(*appsv1.Deployment).Name)
+	deployment := obj.(*appsv1.Deployment)
+	klog.Infof("Processing deployment: %s/%s", deployment.Namespace, deployment.Name)
+
+	// Trigger Diagnosis
+	if d.resolver != nil {
+		d.resolver.Diagnose(context.Background(), deployment.Namespace, "Deployment", deployment.Name, "Deployment Failed")
+	}
+
 	return true
 }
