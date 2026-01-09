@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: amos
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: amos-operator
+  namespace: amos
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: amos-operator
+rules:
+  - apiGroups: ["", "apps", "batch", "rbac.authorization.k8s.io"]
+    resources:
+      [
+        "pods",
+        "pods/log",
+        "deployments",
+        "jobs",
+        "serviceaccounts",
+        "services",
+        "configmaps",
+        "secrets",
+        "clusterroles",
+        "clusterrolebindings",
+      ]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: amos-operator
+subjects:
+  - kind: ServiceAccount
+    name: amos-operator
+    namespace: amos
+roleRef:
+  kind: ClusterRole
+  name: amos-operator
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: amos-operator
+  namespace: amos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: amos-operator
+  template:
+    metadata:
+      labels:
+        app: amos-operator
+    spec:
+      serviceAccountName: amos-operator
+      containers:
+        - name: amos
+          image: amos:v1 # Ensure you load this image into Kind: kind load docker-image amos:v1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GOOGLE_API_KEY
+              value: "xxxxxxxxxxxxxxxxxxxx" # Update manually or use secret
+            - name: EMAIL_SMTP_HOST
+              value: "smtp.gmail.com"
+            - name: EMAIL_SMTP_PORT
+              value: "587"
+            - name: EMAIL_USER
+              value: "xxxxxxx@gmail.com"
+            - name: EMAIL_PASSWORD
+              value: "xxxxxxxxxxxxxx"
+            - name: ENGINEER_EMAIL
+              value: "xxxxxxx@gmail.com"
