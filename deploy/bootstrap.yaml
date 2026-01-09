@@ -20,6 +20,7 @@ rules:
     resources:
       [
         "pods",
+        "pods/log",
         "deployments",
         "jobs",
         "serviceaccounts",
@@ -68,10 +69,14 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: GOOGLE_API_KEY
-              value: "your_api_key_here" # Update manually or use secret
+              value: "xxxxxxxxxxxxxxxxxxxx" # Update manually or use secret
             - name: EMAIL_SMTP_HOST
               value: "smtp.gmail.com"
+            - name: EMAIL_SMTP_PORT
+              value: "587"
             - name: EMAIL_USER
-              value: "your_email@gmail.com"
+              value: "xxxxxxx@gmail.com"
             - name: EMAIL_PASSWORD
-              value: "your_password"
+              value: "xxxxxxxxxxxxxx"
+            - name: ENGINEER_EMAIL
+              value: "xxxxxxx@gmail.com"

@@ -66,7 +66,29 @@ func (t *K8sTools) GetDeploymentLogs(namespace, deploymentName string) (string, 
 		return "No pods found for deployment", nil
 	}
 
-	// Fetch logs from the first pod for diagnosis
+	return t.GetPodLogs(namespace, pods.Items[0].Name)
+}
+func (t *K8sTools) GetJobLogs(namespace, jobName string) (string, error) {
+	job, err := t.client.BatchV1().Jobs(namespace).Get(context.Background(), jobName, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(job.Spec.Selector)
+	if err != nil {
+		return "", err
+	}
+	pods, err := t.client.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{
+		LabelSelector: selector.String(),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if len(pods.Items) == 0 {
+		return "No pods found for job", nil
+	}
+
 	return t.GetPodLogs(namespace, pods.Items[0].Name)
 }
 

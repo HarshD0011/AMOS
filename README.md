@@ -1,79 +1,102 @@
-# AMOS: Autonomous Multi-agent Orchestration Service
+# AMOS: Agentic Mesh Observability System
 
-AMOS is an intelligent Site Reliability Engineering (SRE) agent that monitors your Kubernetes cluster, detects faults, and proactively attempts to fix them using Google's Agent Development Kit (ADK) and Gemini models.
-
-## Features
-
-- **Autonomous Monitoring**: Real-time monitoring of Pods, Deployments, and Jobs.
-- **Intelligent Remediation**: Uses Gemini 2.0 Flash to analyze error logs and K8s events to determining root causes and applying fixes.
-- **Safety First**:
-  - **State Snapshotting**: Captures resource state before attempting fixes.
-  - **Retry Limits**: Maximum of 2 remediation attempts per fault.
-  - **Auto-Rollback**: Automatically reverts changes if remediation fails.
-- **Notifications**: Alerts engineers via Email with detailed reports of actions taken or escalation requests.
-
-## Architecture
-
-AMOS runs as a standalone service (either in-cluster or external) and communicates with the Kubernetes API server.
-
-1. **Monitors** watch for specific failure patterns (CrashLoopBackOff, Deployment stuck, Job failed).
-2. **Fault Detector** aggregates and deduplicates alerts.
-3. **Orchestrator** coordinates the response:
-   - Checks retry limits.
-   - Snapshots the current state.
-   - Generates a context prompt with logs and specs.
-   - Invokes the **ADK Remediation Agent**.
-   - Applies the fix (Patch, Scale, Delete Pod).
-   - Verifies or Escalates.
+AMOS is an intelligent Kubernetes operator that monitors Pods, Deployments, and Jobs. When a failure is detected (e.g., `CrashLoopBackOff`, `ImagePullBackOff`, `Failed`), it triggers an AI agent (powered by Google Gemini) to diagnose the issue and notify an engineer via email.
 
 ## Prerequisites
 
-- Go 1.24+
-- Kubernetes Cluster (GKE, Minikube, Kind, etc.)
-- Google Cloud Project with Vertex AI API enabled (or valid API Key for Gemini).
-- SMTP Server for notifications (Gmail, SendGrid, MailHog for dev).
+- **Docker Desktop** (running)
+- **Kind** (Kubernetes in Docker)
+- **kubectl**
+- **Go** (1.24+ for local development)
 
 ## Configuration
 
-AMOS is configured via `config.yaml` or Environment Variables.
+The application requires the following credentials.
 
-### Environment Variables
+1.  **Google Gemini API Key**: [Get one here](https://aistudio.google.com/).
+2.  **Gmail App Password**: [Generate one here](https://myaccount.google.com/apppasswords) (if using Gmail SMTP).
 
-| Variable              | Description                             |
-| --------------------- | --------------------------------------- |
-| `KUBECONFIG`          | Path to kubeconfig (if running locally) |
-| `GOOGLE_API_KEY`      | **Required**. API Key for Gemini.       |
-| `AMOS_SMTP_HOST`      | SMTP Host (e.g. smtp.gmail.com)         |
-| `AMOS_SMTP_PORT`      | SMTP Port (e.g. 587)                    |
-| `AMOS_SMTP_USERNAME`  | SMTP Username                           |
-| `AMOS_SMTP_PASSWORD`  | SMTP Password                           |
-| `AMOS_ENGINEER_EMAIL` | Email to notify on alerts               |
-| `AMOS_FROM_EMAIL`     | Sender email address                    |
+## Replication Steps (Local)
 
-## Installation & Running
+### 1. Create Cluster
 
-### 1. Build
+If you don't have a cluster running:
 
 ```bash
-go mod tidy
-go build -o amos AMOS/main.go
+kind create cluster --name amos-cluster
 ```
 
-### 2. Run Locally
+### 2. Configure Environment
+
+Edit `deploy/bootstrap.yaml` and update the environment variables in the Deployment section:
+
+```yaml
+env:
+  - name: GOOGLE_API_KEY
+    value: "YOUR_GEMINI_API_KEY"
+  - name: EMAIL_SMTP_HOST
+    value: "smtp.gmail.com"
+  - name: EMAIL_SMTP_PORT
+    value: "587"
+  - name: EMAIL_USER
+    value: "your-email@gmail.com"
+  - name: EMAIL_PASSWORD
+    value: "your-app-password"
+  - name: ENGINEER_EMAIL
+    value: "recipient-email@example.com"
+```
+
+### 3. Build Docker Image
+
+Build the image with the tag expected by the deployment manifest:
 
 ```bash
-export KUBECONFIG=~/.kube/config
-export GOOGLE_API_KEY="your-api-key"
-export AMOS_ENGINEER_EMAIL="admin@example.com"
-# ... other env vars
-
-./amos
+docker build -t amos:v1 .
 ```
 
-### 3. Run in Kubernetes
+### 4. Load Image into Kind
 
-Build a Docker image and deploy using the provided manifests (not included in MVP, but standard Deployment/ServiceAccount setup).
+This step is critical so Kind can access the local image:
 
-## Security Note
+```bash
+kind load docker-image amos:v1
+```
 
-AMOS requires broad permissions (`get`, `list`, `watch`, `update`, `patch`, `delete`) on `Pods`, `Deployments`, and `Jobs` in the monitored namespaces. Ensure you grant these permissions via RBAC responsibly.
+### 5. Deploy Operator
+
+Apply the bootstrap manifest, which creates the Namespace, ServiceAccount, RBAC roles, and Deployment:
+
+```bash
+kubectl apply -f deploy/bootstrap.yaml
+```
+
+**Verify successful startup:**
+
+```bash
+kubectl get pods -n amos
+kubectl logs -n amos -l app=amos-operator -f
+```
+
+_You should see "Starting InformerDeployment..." and "All informers started."_
+
+### 6. Verify Functionality (Trigger a Fault)
+
+Create a Pod designed to fail immediately:
+
+```bash
+kubectl run test-fail --image=busybox --restart=Never -- /bin/false
+```
+
+**Observe Behavior:**
+
+1.  **Log Output**: The operator logs will show `Processing pod...`, `Diagnosing...`, and `Diagnosis: ...`.
+2.  **Email**: The recipient email will receive a diagnosis report.
+
+## Cleanup
+
+To remove AMOS and the test pod:
+
+```bash
+kubectl delete -f deploy/bootstrap.yaml
+kubectl delete pod test-fail
+```

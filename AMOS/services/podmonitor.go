@@ -30,11 +30,42 @@ func NewPodMonitor(client kubernetes.Interface, resolver *agent.Resolver) *PodMo
 		queue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "pod-monitor"),
 		resolver: resolver,
 	}
+	isPodFailed := func(pod *corev1.Pod) bool {
+		if pod.Status.Phase == corev1.PodFailed {
+			return true
+		}
+		// Check for specific container errors (CrashLoopBackOff, ImagePullBackOff, etc.)
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.State.Waiting != nil {
+				reason := status.State.Waiting.Reason
+				if reason == "CrashLoopBackOff" || reason == "ImagePullBackOff" || reason == "ErrImagePull" || reason == "CreateContainerConfigError" || reason == "RunContainerError" {
+					return true
+				}
+			}
+			if status.State.Terminated != nil && status.State.Terminated.ExitCode != 0 {
+				return true
+			}
+		}
+		// Also check InitContainers
+		for _, status := range pod.Status.InitContainerStatuses {
+			if status.State.Waiting != nil {
+				reason := status.State.Waiting.Reason
+				if reason == "CrashLoopBackOff" || reason == "ImagePullBackOff" || reason == "ErrImagePull" {
+					return true
+				}
+			}
+			if status.State.Terminated != nil && status.State.Terminated.ExitCode != 0 {
+				return true
+			}
+		}
+		return false
+	}
+
 	informer.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				pod := obj.(*corev1.Pod)
-				if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodUnknown {
+				if isPodFailed(pod) {
 					key, err := cache.MetaNamespaceKeyFunc(pod)
 					if err == nil {
 						c.queue.Add(key)
@@ -43,7 +74,7 @@ func NewPodMonitor(client kubernetes.Interface, resolver *agent.Resolver) *PodMo
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				newpod := newObj.(*corev1.Pod)
-				if newpod.Status.Phase == corev1.PodFailed || newpod.Status.Phase == corev1.PodUnknown {
+				if isPodFailed(newpod) {
 					key, err := cache.MetaNamespaceKeyFunc(newpod)
 					if err == nil {
 						c.queue.Add(key)

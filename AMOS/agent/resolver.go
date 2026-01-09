@@ -26,8 +26,7 @@ func NewResolver(t *tools.K8sTools) *Resolver {
 		fmt.Println("Warning: GOOGLE_API_KEY not set")
 	}
 
-	// Initialize Gemini Model
-	m, err := gemini.NewModel(ctx, "gemini-1.5-pro", &genai.ClientConfig{
+	m, err := gemini.NewModel(ctx, "gemini-2.5-flash", &genai.ClientConfig{
 		APIKey: apiKey,
 	})
 	if err != nil {
@@ -41,17 +40,17 @@ func NewResolver(t *tools.K8sTools) *Resolver {
 	}
 }
 
-// Diagnose investigates a failure and attempts to fix it.
 func (r *Resolver) Diagnose(ctx context.Context, namespace, kind, name string, errMessage string) {
 	fmt.Printf("Diagnosing %s/%s %s: %s\n", kind, namespace, name, errMessage)
 
-	// 1. Gather Information
 	var logs string
 	var err error
 	if kind == "Pod" {
 		logs, err = r.tools.GetPodLogs(namespace, name)
 	} else if kind == "Deployment" {
 		logs, err = r.tools.GetDeploymentLogs(namespace, name)
+	} else if kind == "Job" {
+		logs, err = r.tools.GetJobLogs(namespace, name)
 	}
 
 	if err != nil {
@@ -59,13 +58,12 @@ func (r *Resolver) Diagnose(ctx context.Context, namespace, kind, name string, e
 		logs = "Could not fetch logs."
 	}
 
-	// 2. Ask Model for diagnosis
 	input := fmt.Sprintf("Context: Resource %s/%s (%s) failed.\nError Message: %s\n\nLogs (last 50 lines):\n%s\n\nPlease diagnose the issue and suggest a fix.", namespace, name, kind, errMessage, logs)
 
 	var diagnosisBuilder strings.Builder
 	if r.llm != nil {
 		req := &model.LLMRequest{
-			Model: "gemini-1.5-pro",
+			Model: "gemini-2.5-flash",
 			Contents: []*genai.Content{
 				{
 					Role: "user",
