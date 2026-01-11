@@ -2,9 +2,11 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/HarshD0011/AMOS/AMOS/agent"
+	"github.com/HarshD0011/AMOS/AMOS/pkg/state"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -17,53 +19,75 @@ import (
 // this is for monitoring the deployment of the k8s cluster
 
 type DeploymentMonitor struct {
-	informer cache.SharedIndexInformer
-	queue    workqueue.RateLimitingInterface
-	resolver *agent.Resolver
+	informer     cache.SharedIndexInformer
+	queue        workqueue.RateLimitingInterface
+	resolver     *agent.Resolver
+	stateManager *state.StateManager
 }
 
-func NewDeploymentMonitor(client kubernetes.Interface, resolver *agent.Resolver) *DeploymentMonitor {
+func NewDeploymentMonitor(client kubernetes.Interface, resolver *agent.Resolver, sm *state.StateManager) *DeploymentMonitor {
 	factory := informers.NewSharedInformerFactory(client, 5*time.Minute)
 	informer := factory.Apps().V1().Deployments().Informer()
 
 	c := &DeploymentMonitor{
-		informer: informer,
-		queue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "deployment-monitor"),
-		resolver: resolver,
+		informer:     informer,
+		queue:        workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "deployment-monitor"),
+		resolver:     resolver,
+		stateManager: sm,
 	}
+
 	informer.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				deploy := obj.(*appsv1.Deployment)
-				for _, cond := range deploy.Status.Conditions {
-					if cond.Type == appsv1.DeploymentProgressing && cond.Status == "False" && cond.Reason == "ProgressDeadlineExceeded" {
-						key, err := cache.MetaNamespaceKeyFunc(deploy)
-						if err == nil {
-							c.queue.Add(key)
-						}
-						break
+				deployment := obj.(*appsv1.Deployment)
+				// Check for failure conditions (Replica mismatch)
+				if deployment.Status.Replicas != deployment.Status.ReadyReplicas {
+					// Report Failure (Red)
+					if c.stateManager != nil {
+						msg := fmt.Sprintf("Replica Mismatch: %d/%d", deployment.Status.ReadyReplicas, deployment.Status.Replicas)
+						c.stateManager.ReportFailure(deployment.Namespace, "Deployment", deployment.Name, msg)
+					}
+					key, err := cache.MetaNamespaceKeyFunc(deployment)
+					if err == nil {
+						c.queue.Add(key)
 					}
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				newDeployment := newObj.(*appsv1.Deployment)
-				// Check if deployment has failed.
-				for _, cond := range newDeployment.Status.Conditions {
-					if cond.Type == appsv1.DeploymentProgressing && cond.Status == "False" && cond.Reason == "ProgressDeadlineExceeded" {
-						key, err := cache.MetaNamespaceKeyFunc(newDeployment)
-						if err == nil {
-							c.queue.Add(key)
-						}
-						break
+				if newDeployment.Status.Replicas != newDeployment.Status.ReadyReplicas {
+					// Report Failure (Red)
+					if c.stateManager != nil {
+						msg := fmt.Sprintf("Replica Mismatch: %d/%d", newDeployment.Status.ReadyReplicas, newDeployment.Status.Replicas)
+						c.stateManager.ReportFailure(newDeployment.Namespace, "Deployment", newDeployment.Name, msg)
+					}
+					key, err := cache.MetaNamespaceKeyFunc(newDeployment)
+					if err == nil {
+						c.queue.Add(key)
+					}
+				} else {
+					// Resolve Issue (Green)
+					if c.stateManager != nil {
+						c.stateManager.Resolve(newDeployment.Namespace, "Deployment", newDeployment.Name)
 					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-				if err != nil {
-					return
+				// Resolve on delete
+				deployment, ok := obj.(*appsv1.Deployment)
+				if !ok {
+					tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+					if !ok {
+						return
+					}
+					deployment, ok = tombstone.Obj.(*appsv1.Deployment)
+					if !ok {
+						return
+					}
 				}
-				c.queue.Add(key)
+				if c.stateManager != nil {
+					c.stateManager.Resolve(deployment.Namespace, "Deployment", deployment.Name)
+				}
 			},
 		},
 	)

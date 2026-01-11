@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/HarshD0011/AMOS/AMOS/agent"
+	"github.com/HarshD0011/AMOS/AMOS/pkg/state"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -15,21 +16,24 @@ import (
 )
 
 type PodMonitor struct {
-	informer cache.SharedIndexInformer
-	queue    workqueue.RateLimitingInterface
-	resolver *agent.Resolver
+	informer     cache.SharedIndexInformer
+	queue        workqueue.RateLimitingInterface
+	resolver     *agent.Resolver
+	stateManager *state.StateManager
 }
 
-func NewPodMonitor(client kubernetes.Interface, resolver *agent.Resolver) *PodMonitor {
+func NewPodMonitor(client kubernetes.Interface, resolver *agent.Resolver, sm *state.StateManager) *PodMonitor {
 
 	factory := informers.NewSharedInformerFactory(client, 5*time.Minute)
 	informer := factory.Core().V1().Pods().Informer()
 
 	c := &PodMonitor{
-		informer: informer,
-		queue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "pod-monitor"),
-		resolver: resolver,
+		informer:     informer,
+		queue:        workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "pod-monitor"),
+		resolver:     resolver,
+		stateManager: sm,
 	}
+
 	isPodFailed := func(pod *corev1.Pod) bool {
 		if pod.Status.Phase == corev1.PodFailed {
 			return true
@@ -66,6 +70,10 @@ func NewPodMonitor(client kubernetes.Interface, resolver *agent.Resolver) *PodMo
 			AddFunc: func(obj interface{}) {
 				pod := obj.(*corev1.Pod)
 				if isPodFailed(pod) {
+					// Report Failure (Red)
+					if c.stateManager != nil {
+						c.stateManager.ReportFailure(pod.Namespace, "Pod", pod.Name, string(pod.Status.Phase))
+					}
 					key, err := cache.MetaNamespaceKeyFunc(pod)
 					if err == nil {
 						c.queue.Add(key)
@@ -75,18 +83,39 @@ func NewPodMonitor(client kubernetes.Interface, resolver *agent.Resolver) *PodMo
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				newpod := newObj.(*corev1.Pod)
 				if isPodFailed(newpod) {
+					// Report Failure (Red)
+					if c.stateManager != nil {
+						c.stateManager.ReportFailure(newpod.Namespace, "Pod", newpod.Name, string(newpod.Status.Phase))
+					}
 					key, err := cache.MetaNamespaceKeyFunc(newpod)
 					if err == nil {
 						c.queue.Add(key)
 					}
+				} else if newpod.Status.Phase == corev1.PodRunning || newpod.Status.Phase == corev1.PodSucceeded {
+					// Resolve Issue (Green)
+					if c.stateManager != nil {
+						c.stateManager.Resolve(newpod.Namespace, "Pod", newpod.Name)
+					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-				if err != nil {
-					return
+				// If deleted, maybe resolve? or just ignore.
+				// Let's resolve usage if deleted to clean up UI.
+				pod, ok := obj.(*corev1.Pod)
+				if !ok {
+					// Process DeletedFinalStateUnknown
+					tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+					if !ok {
+						return
+					}
+					pod, ok = tombstone.Obj.(*corev1.Pod)
+					if !ok {
+						return
+					}
 				}
-				c.queue.Add(key)
+				if c.stateManager != nil {
+					c.stateManager.Resolve(pod.Namespace, "Pod", pod.Name)
+				}
 			},
 		},
 	)
