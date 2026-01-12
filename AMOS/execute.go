@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/HarshD0011/AMOS/AMOS/pkg/server"
+	"github.com/HarshD0011/AMOS/AMOS/pkg/state"
 	"github.com/HarshD0011/AMOS/AMOS/services"
 	"github.com/joho/godotenv"
 	"k8s.io/client-go/kubernetes"
@@ -52,10 +54,19 @@ func Execute() {
 	defer cancel()
 
 	klog.Info("Ensuring AMOS resources exist...")
-	services.Informer(clientset)
 
-	informerDeployment := services.NewInformerDeployment(clientset)
-	go informerDeployment.Run(ctx)
+	// Initialize StateManager
+	sm := state.NewStateManager()
+
+	// Initialize and Run Web UI Server
+	// Frontend path assumes running from root or adjusting path.
+	// We'll point to ./ui/dist assuming build output there.
+	srv := server.NewServer(sm, "./ui/dist", "8080")
+	go srv.Run()
+
+	// Pass StateManager to Informer
+	informer := services.NewInformerDeployment(clientset, sm)
+	informer.Run(ctx)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

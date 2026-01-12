@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/HarshD0011/AMOS/AMOS/agent"
+	"github.com/HarshD0011/AMOS/AMOS/pkg/state"
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -16,29 +17,36 @@ import (
 )
 
 type JobMonitor struct {
-	informer cache.SharedIndexInformer
-	queue    workqueue.RateLimitingInterface
-	resolver *agent.Resolver
+	informer     cache.SharedIndexInformer
+	queue        workqueue.RateLimitingInterface
+	resolver     *agent.Resolver
+	stateManager *state.StateManager
 }
 
-func NewJobMonitor(client kubernetes.Interface, resolver *agent.Resolver) *JobMonitor {
+func NewJobMonitor(client kubernetes.Interface, resolver *agent.Resolver, sm *state.StateManager) *JobMonitor {
 
 	factory := informers.NewSharedInformerFactory(client, 5*time.Minute)
 	informer := factory.Batch().V1().Jobs().Informer()
 
-	j := &JobMonitor{
-		informer: informer,
-		queue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "job-monitor"),
-		resolver: resolver,
+	c := &JobMonitor{
+		informer:     informer,
+		queue:        workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "job-monitor"),
+		resolver:     resolver,
+		stateManager: sm,
 	}
 	informer.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				job := obj.(*batchv1.Job)
 				if job.Status.Failed > 0 {
+					// Report Failure (Red)
+					if c.stateManager != nil {
+						msg := fmt.Sprintf("Job Failed: %d failed pods", job.Status.Failed)
+						c.stateManager.ReportFailure(job.Namespace, "Job", job.Name, msg)
+					}
 					key, err := cache.MetaNamespaceKeyFunc(job)
 					if err == nil {
-						j.queue.Add(key)
+						c.queue.Add(key)
 					}
 				}
 			},
@@ -46,23 +54,43 @@ func NewJobMonitor(client kubernetes.Interface, resolver *agent.Resolver) *JobMo
 				newJob := newObj.(*batchv1.Job)
 				// Check for failure
 				if newJob.Status.Failed > 0 {
+					// Report Failure (Red)
+					if c.stateManager != nil {
+						msg := fmt.Sprintf("Job Failed: %d failed pods", newJob.Status.Failed)
+						c.stateManager.ReportFailure(newJob.Namespace, "Job", newJob.Name, msg)
+					}
 					key, err := cache.MetaNamespaceKeyFunc(newJob)
 					if err == nil {
-						j.queue.Add(key)
+						c.queue.Add(key)
+					}
+				} else if newJob.Status.Succeeded > 0 {
+					// Resolve Issue (Green)
+					if c.stateManager != nil {
+						c.stateManager.Resolve(newJob.Namespace, "Job", newJob.Name)
 					}
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-				if err != nil {
-					return
+				// Resolve on delete
+				job, ok := obj.(*batchv1.Job)
+				if !ok {
+					tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+					if !ok {
+						return
+					}
+					job, ok = tombstone.Obj.(*batchv1.Job)
+					if !ok {
+						return
+					}
 				}
-				j.queue.Add(key)
+				if c.stateManager != nil {
+					c.stateManager.Resolve(job.Namespace, "Job", job.Name)
+				}
 			},
 		},
 	)
 
-	return j
+	return c
 }
 
 func (j *JobMonitor) Run(ctx context.Context) {

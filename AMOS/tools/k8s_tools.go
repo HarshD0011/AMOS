@@ -92,6 +92,40 @@ func (t *K8sTools) GetJobLogs(namespace, jobName string) (string, error) {
 	return t.GetPodLogs(namespace, pods.Items[0].Name)
 }
 
+// GetResourceEvents fetches events for a given resource (similar to kubectl describe).
+func (t *K8sTools) GetResourceEvents(kind, namespace, name string) (string, error) {
+	ctx := context.Background()
+
+	// Fetch events for the resource
+	fieldSelector := fmt.Sprintf("involvedObject.kind=%s,involvedObject.name=%s,involvedObject.namespace=%s", kind, name, namespace)
+	events, err := t.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fieldSelector,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get events: %v", err)
+	}
+
+	if len(events.Items) == 0 {
+		return "No events found for this resource.", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Events for %s/%s in namespace %s:\n", kind, name, namespace))
+	sb.WriteString("---\n")
+
+	for _, event := range events.Items {
+		sb.WriteString(fmt.Sprintf("Type: %s\n", event.Type))
+		sb.WriteString(fmt.Sprintf("Reason: %s\n", event.Reason))
+		sb.WriteString(fmt.Sprintf("Message: %s\n", event.Message))
+		sb.WriteString(fmt.Sprintf("Count: %d\n", event.Count))
+		sb.WriteString(fmt.Sprintf("First Seen: %s\n", event.FirstTimestamp.Format("2006-01-02 15:04:05")))
+		sb.WriteString(fmt.Sprintf("Last Seen: %s\n", event.LastTimestamp.Format("2006-01-02 15:04:05")))
+		sb.WriteString("---\n")
+	}
+
+	return sb.String(), nil
+}
+
 // GetSecret fetches a secret and returns its Data map (redacted manually if needed, but agent might need it).
 func (t *K8sTools) GetSecret(namespace, name string) (string, error) {
 	secret, err := t.client.CoreV1().Secrets(namespace).Get(context.Background(), name, metav1.GetOptions{})
