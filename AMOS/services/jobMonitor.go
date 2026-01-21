@@ -131,9 +131,14 @@ func (j *JobMonitor) processNextItem() bool {
 	job := obj.(*batchv1.Job)
 	klog.Infof("Processing job: %s/%s", job.Namespace, job.Name)
 
-	// Trigger Diagnosis
-	if j.resolver != nil {
-		j.resolver.Diagnose(context.Background(), job.Namespace, "Job", job.Name, fmt.Sprintf("Job failed with %d failures", job.Status.Failed))
+	// Only trigger LLM diagnosis if the issue hasn't been diagnosed yet
+	if j.resolver != nil && j.stateManager != nil {
+		if j.stateManager.NeedsDiagnosis(job.Namespace, "Job", job.Name) {
+			klog.Infof("Triggering LLM diagnosis for job: %s/%s", job.Namespace, job.Name)
+			j.resolver.Diagnose(context.Background(), job.Namespace, "Job", job.Name, fmt.Sprintf("Job failed with %d failures", job.Status.Failed))
+		} else {
+			klog.Infof("Skipping diagnosis for job %s/%s (already diagnosed or resolved)", job.Namespace, job.Name)
+		}
 	}
 
 	return true

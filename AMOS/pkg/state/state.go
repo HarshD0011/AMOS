@@ -29,6 +29,7 @@ type Issue struct {
 	Events       string      `json:"events"`
 	Diagnosis    string      `json:"diagnosis"`
 	Suggestion   string      `json:"suggestion"`
+	Diagnosed    bool        `json:"diagnosed"` // True if LLM diagnosis was already performed
 	UpdatedAt    time.Time   `json:"updatedAt"`
 }
 
@@ -95,7 +96,7 @@ func (sm *StateManager) UpdateStatus(namespace, kind, name string, status IssueS
 	}
 }
 
-// AddDiagnosis adds analysis details to the issue.
+// AddDiagnosis adds analysis details to the issue and marks it as diagnosed.
 func (sm *StateManager) AddDiagnosis(namespace, kind, name, logs, events, diagnosis string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -105,6 +106,7 @@ func (sm *StateManager) AddDiagnosis(namespace, kind, name, logs, events, diagno
 		issue.Logs = logs
 		issue.Events = events
 		issue.Diagnosis = diagnosis
+		issue.Diagnosed = true // Mark as diagnosed to prevent repeated LLM calls
 		issue.UpdatedAt = time.Now()
 	}
 }
@@ -119,8 +121,22 @@ func (sm *StateManager) Resolve(namespace, kind, name string) {
 	if issue, exists := sm.issues[key]; exists {
 		issue.Status = StatusResolved
 		issue.ErrorMessage = ""
+		issue.Diagnosed = false // Reset so it can be re-diagnosed if issue recurs
 		issue.UpdatedAt = time.Now()
 	}
+}
+
+// NeedsDiagnosis checks if an issue exists and hasn't been diagnosed yet.
+// Returns true only if the issue exists, is not resolved, and hasn't been diagnosed.
+func (sm *StateManager) NeedsDiagnosis(namespace, kind, name string) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	key := fmt.Sprintf("%s/%s/%s", namespace, kind, name)
+	if issue, exists := sm.issues[key]; exists {
+		return issue.Status != StatusResolved && !issue.Diagnosed
+	}
+	return false
 }
 
 // GetAllIssues returns a list of all tracked issues.

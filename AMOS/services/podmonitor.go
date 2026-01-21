@@ -159,9 +159,15 @@ func (c *PodMonitor) processNextItem() bool {
 	pod := obj.(*corev1.Pod)
 	klog.Infof("Processing pod: %s/%s", pod.Namespace, pod.Name)
 
-	// Trigger Diagnosis
-	if c.resolver != nil {
-		c.resolver.Diagnose(context.Background(), pod.Namespace, "Pod", pod.Name, string(pod.Status.Phase))
+	// Only trigger LLM diagnosis if the issue hasn't been diagnosed yet
+	// This prevents redundant LLM calls for the same issue
+	if c.resolver != nil && c.stateManager != nil {
+		if c.stateManager.NeedsDiagnosis(pod.Namespace, "Pod", pod.Name) {
+			klog.Infof("Triggering LLM diagnosis for pod: %s/%s", pod.Namespace, pod.Name)
+			c.resolver.Diagnose(context.Background(), pod.Namespace, "Pod", pod.Name, string(pod.Status.Phase))
+		} else {
+			klog.Infof("Skipping diagnosis for pod %s/%s (already diagnosed or resolved)", pod.Namespace, pod.Name)
+		}
 	}
 
 	return true
