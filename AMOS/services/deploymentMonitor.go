@@ -134,9 +134,14 @@ func (d *DeploymentMonitor) processNextItem() bool {
 	deployment := obj.(*appsv1.Deployment)
 	klog.Infof("Processing deployment: %s/%s", deployment.Namespace, deployment.Name)
 
-	// Trigger Diagnosis
-	if d.resolver != nil {
-		d.resolver.Diagnose(context.Background(), deployment.Namespace, "Deployment", deployment.Name, "Deployment Failed")
+	// Only trigger LLM diagnosis if the issue hasn't been diagnosed yet
+	if d.resolver != nil && d.stateManager != nil {
+		if d.stateManager.NeedsDiagnosis(deployment.Namespace, "Deployment", deployment.Name) {
+			klog.Infof("Triggering LLM diagnosis for deployment: %s/%s", deployment.Namespace, deployment.Name)
+			d.resolver.Diagnose(context.Background(), deployment.Namespace, "Deployment", deployment.Name, "Deployment Failed")
+		} else {
+			klog.Infof("Skipping diagnosis for deployment %s/%s (already diagnosed or resolved)", deployment.Namespace, deployment.Name)
+		}
 	}
 
 	return true

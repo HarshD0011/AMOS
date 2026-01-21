@@ -29,7 +29,7 @@ func NewResolver(t *tools.K8sTools, sm *state.StateManager) *Resolver {
 	}
 
 	// Initialize Gemini Model
-	m, err := gemini.NewModel(ctx, "gemini-2.0-flash", &genai.ClientConfig{
+	m, err := gemini.NewModel(ctx, "gemini-2.5-flash", &genai.ClientConfig{
 		APIKey: apiKey,
 	})
 	if err != nil {
@@ -100,7 +100,7 @@ Format your response with these exact headers:
 	var diagnosisBuilder strings.Builder
 	if r.llm != nil {
 		req := &model.LLMRequest{
-			Model: "gemini-2.0-flash",
+			Model: "gemini-2.5-flash",
 			Contents: []*genai.Content{
 				{
 					Role: "user",

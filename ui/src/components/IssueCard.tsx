@@ -72,49 +72,54 @@ export const IssueCard: React.FC<IssueCardProps> = ({ issue }) => {
             {/* Expanded Content */}
             {expanded && (
                 <div className="bg-gray-850 p-5 border-t border-gray-700 space-y-4">
-                    {/* Error Message */}
-                    <div>
-                        <h4 className="font-semibold text-red-400 mb-2 flex items-center">
-                            <AlertCircle className="w-4 h-4 mr-2" /> Error
-                        </h4>
-                        <div className="bg-red-900/30 p-3 rounded-lg text-sm font-mono text-red-300 break-words border border-red-800/50">
-                            {issue.errorMessage}
-                        </div>
-                    </div>
-
-                    {/* Recommended Solution */}
-                    {recommendation && (
-                        <div>
-                            <h4 className="font-semibold text-emerald-400 mb-2 flex items-center">
-                                <Zap className="w-4 h-4 mr-2" /> Recommended Solution
-                            </h4>
-                            <div className="bg-emerald-900/30 p-4 rounded-lg text-sm text-emerald-200 whitespace-pre-wrap border border-emerald-800/50 leading-relaxed">
-                                {recommendation}
+                    {/* Only show Error, Recommended Solution, and Analysis when NOT Resolved */}
+                    {issue.status !== 'Resolved' && (
+                        <>
+                            {/* Error Message */}
+                            <div>
+                                <h4 className="font-semibold text-red-400 mb-2 flex items-center">
+                                    <AlertCircle className="w-4 h-4 mr-2" /> Error
+                                </h4>
+                                <div className="bg-red-900/30 p-3 rounded-lg text-sm font-mono text-red-300 break-words border border-red-800/50">
+                                    {issue.errorMessage}
+                                </div>
                             </div>
-                        </div>
-                    )}
 
-                    {/* Full Model Trace (Collapsible) */}
-                    {fullTrace && (
-                        <div>
-                            <button 
-                                onClick={() => setShowTrace(!showTrace)}
-                                className="text-sm text-blue-400 hover:text-blue-300 font-medium flex items-center"
-                            >
-                                <FileText className="w-4 h-4 mr-1.5" />
-                                {showTrace ? 'Hide' : 'Show'} Full Analysis
-                            </button>
-                            {showTrace && (
-                                <div className="mt-2 bg-blue-900/20 p-4 rounded-lg text-sm text-blue-200 whitespace-pre-wrap border border-blue-800/50 leading-relaxed max-h-96 overflow-y-auto">
-                                    {fullTrace}
+                            {/* Recommended Solution */}
+                            {recommendation && (
+                                <div>
+                                    <h4 className="font-semibold text-emerald-400 mb-2 flex items-center">
+                                        <Zap className="w-4 h-4 mr-2" /> Recommended Solution
+                                    </h4>
+                                    <div className="bg-emerald-900/30 p-4 rounded-lg text-sm text-emerald-200 whitespace-pre-wrap border border-emerald-800/50 leading-relaxed">
+                                        {recommendation}
+                                    </div>
                                 </div>
                             )}
-                        </div>
+
+                            {/* Full Model Trace (Collapsible) */}
+                            {fullTrace && (
+                                <div>
+                                    <button 
+                                        onClick={() => setShowTrace(!showTrace)}
+                                        className="text-sm text-blue-400 hover:text-blue-300 font-medium flex items-center"
+                                    >
+                                        <FileText className="w-4 h-4 mr-1.5" />
+                                        {showTrace ? 'Hide' : 'Show'} Full Analysis
+                                    </button>
+                                    {showTrace && (
+                                        <div className="mt-2 bg-blue-900/20 p-4 rounded-lg text-sm text-blue-200 whitespace-pre-wrap border border-blue-800/50 leading-relaxed max-h-96 overflow-y-auto">
+                                            {fullTrace}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </>
                     )}
 
-                    {/* Events */}
+                    {/* Events - Always shown */}
                     {issue.events && (
-                        <details className="group">
+                        <details className="group" open={issue.status === 'Resolved'}>
                             <summary className="cursor-pointer text-gray-400 hover:text-gray-300 text-sm flex items-center font-medium">
                                 <Terminal className="w-4 h-4 mr-2" />
                                 View Events (kubectl describe)
@@ -125,11 +130,18 @@ export const IssueCard: React.FC<IssueCardProps> = ({ issue }) => {
                         </details>
                     )}
 
-                    {/* Logs */}
-                    <details className="group">
+                    {/* Logs - Always shown with live indicator */}
+                    <details className="group" open={issue.status === 'Resolved'}>
                         <summary className="cursor-pointer text-gray-400 hover:text-gray-300 text-sm flex items-center font-medium">
                             <Terminal className="w-4 h-4 mr-2" />
                             View Logs
+                            <span className="ml-2 flex items-center text-green-400 text-xs">
+                                <span className="relative flex h-2 w-2 mr-1">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                                </span>
+                                Live
+                            </span>
                         </summary>
                         <div className="mt-2 text-xs bg-gray-950 text-green-400 p-4 rounded-lg overflow-x-auto font-mono whitespace-pre max-h-64 overflow-y-auto border border-gray-700">
                             {issue.logs || "No logs available."}

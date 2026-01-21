@@ -3,6 +3,9 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/HarshD0011/AMOS/AMOS/pkg/state"
 	"k8s.io/klog/v2"
@@ -31,14 +34,43 @@ func (s *Server) Run() {
 	// API Endpoints
 	mux.HandleFunc("/api/issues", s.handleGetIssues)
 
-	// Static Files (Frontend)
-	fileServer := http.FileServer(http.Dir(s.frontendPath))
-	mux.Handle("/", http.StripPrefix("/", fileServer))
+	// SPA Fallback Handler - serves index.html for client-side routes
+	mux.HandleFunc("/", s.handleSPA)
 
 	klog.Infof("Starting Web UI server on port %s", s.port)
 	if err := http.ListenAndServe(":"+s.port, s.enableCORS(mux)); err != nil {
 		klog.Fatalf("Server failed: %v", err)
 	}
+}
+
+// handleSPA serves static files if they exist, otherwise falls back to index.html
+// This enables React Router to handle client-side routes like /pods, /deployments, /jobs
+func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
+	// Get the path from the URL
+	path := r.URL.Path
+
+	// Build the full file path
+	fullPath := filepath.Join(s.frontendPath, path)
+
+	// Check if the requested file exists
+	info, err := os.Stat(fullPath)
+	if err == nil && !info.IsDir() {
+		// File exists, serve it
+		http.ServeFile(w, r, fullPath)
+		return
+	}
+
+	// Check if it's a request for static assets (has a file extension)
+	if strings.Contains(filepath.Base(path), ".") {
+		// It's a file request that doesn't exist - return 404
+		http.NotFound(w, r)
+		return
+	}
+
+	// For all other routes (like /pods, /deployments, /jobs), serve index.html
+	// This allows React Router to handle the routing
+	indexPath := filepath.Join(s.frontendPath, "index.html")
+	http.ServeFile(w, r, indexPath)
 }
 
 func (s *Server) handleGetIssues(w http.ResponseWriter, r *http.Request) {
